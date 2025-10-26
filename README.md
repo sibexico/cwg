@@ -1,6 +1,16 @@
 **C WaitGroup (cwg)**
 
-The concept of golang-style WaitGroup in C. 
+A Golang-style WaitGroup implementation in C with cross-platform support for Linux and Windows. 
+
+## API Reference
+
+- `bool cwg_init(cwg_t *wg)` - Initialize a WaitGroup (must call before use)
+- `void cwg_destroy(cwg_t *wg)` - Clean up WaitGroup resources
+- `bool cwg_add(cwg_t *wg, int delta)` - Add delta to the counter (returns false on error)
+- `void cwg_done(cwg_t *wg)` - Decrement counter by 1 (call when task completes)
+- `void cwg_wait(cwg_t *wg)` - Block until counter reaches zero
+- `bool cwg_go(cwg_t *wg, int (*func)(void *), void *arg)` - Start a goroutine-style task
+- `int cwg_count(cwg_t *wg)` - Get current counter value (for debugging)
 
 **Usage Example**
 
@@ -33,7 +43,7 @@ int main() {
         return 1;
     }
 
-    printf("Main: Starting 3 concurrent workers...\n");
+    printf("Starting 3 concurrent workers...\n");
 
     int id1 = 1, id2 = 2, id3 = 3;
 
@@ -42,12 +52,12 @@ int main() {
     cwg_go(&wg, worker, &id2);
     cwg_go(&wg, worker, &id3);
 
-    printf("Main: Waiting for all workers to finish...\n");
+    printf("Waiting for all workers to finish...\n");
     
     // Block until all tasks call cwg_done()
     cwg_wait(&wg);
 
-    printf("Main: All tasks complete. Shutting down.\n");
+    printf("All tasks complete. Shutting down.\n");
 
     // Clean up
     cwg_destroy(&wg);
@@ -59,7 +69,14 @@ int main() {
 
 **Compilation**
 
-```Bash
-gcc -std=c23 -o example example.c -pthread
+### Linux/Unix
+```bash
+gcc -std=c11 -o example example.c -pthread
 ./example
+```
+
+### Windows
+```bash
+gcc -std=c11 -o example.exe example.c
+example.exe
 ```
