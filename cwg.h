@@ -4,8 +4,14 @@
 #include <stdlib.h>
 #include <stdbool.h>
 
+#if defined(__has_include)
+    #define CWG_HAS_INCLUDE(x) __has_include(x)
+#else
+    #define CWG_HAS_INCLUDE(x) 1
+#endif
+
 // Atomic operations support - check for C11 atomics
-#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L && !defined(__STDC_NO_ATOMICS__)
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L && !defined(__STDC_NO_ATOMICS__) && CWG_HAS_INCLUDE(<stdatomic.h>)
     #include <stdatomic.h>
     #define CWG_HAS_ATOMICS
 #elif defined(_MSC_VER)
@@ -59,7 +65,7 @@
 // Cross-platform threading support
 #if defined(_WIN32) || defined(_WIN64)
     // Use native Windows threads if C11 threads not available
-    #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L && !defined(__STDC_NO_THREADS__)
+    #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L && !defined(__STDC_NO_THREADS__) && CWG_HAS_INCLUDE(<threads.h>)
         #include <threads.h>
         #define CWG_USE_C11_THREADS
     #else
@@ -68,7 +74,7 @@
     #endif
 #else
     // Linux/Unix: Try C11 threads first, fallback to pthreads
-    #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L && !defined(__STDC_NO_THREADS__)
+    #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L && !defined(__STDC_NO_THREADS__) && CWG_HAS_INCLUDE(<threads.h>)
         #include <threads.h>
         #define CWG_USE_C11_THREADS
     #else
@@ -112,7 +118,8 @@ typedef struct {
     int (*coro_func)(void *);
 } cwg_job_t;
 
-void cwg_done(cwg_t *wg);
+static inline void cwg_done(cwg_t *wg);
+static inline int _cwg_thread_entry(void *arg);
 
 // Cross-platform mutex operations
 static inline bool _cwg_mutex_init(cwg_mutex_t *mtx) {
@@ -217,8 +224,15 @@ static DWORD WINAPI _cwg_thread_entry_win32(LPVOID arg) {
 }
 #endif
 
+#ifdef CWG_USE_PTHREADS
+static void *_cwg_thread_entry_pthread(void *arg) {
+    (void)_cwg_thread_entry(arg);
+    return NULL;
+}
+#endif
+
 // Executes the user function, then calls cwg_done(), and frees the job memory.
-static int _cwg_thread_entry(void *arg) {
+static inline int _cwg_thread_entry(void *arg) {
     cwg_job_t *job = (cwg_job_t *)arg;
     int result = job->coro_func(job->arg);
     cwg_done(job->wg);
@@ -227,7 +241,7 @@ static int _cwg_thread_entry(void *arg) {
 }
 
 // Initialize the WaitGroup. Must be called before use.
-bool cwg_init(cwg_t *wg) {
+static inline bool cwg_init(cwg_t *wg) {
     if (!wg) return false;
     
     atomic_init(&wg->counter, 0);
@@ -246,7 +260,7 @@ bool cwg_init(cwg_t *wg) {
 }
 
 // Clean up the WaitGroup. Must be called after cwg_wait().
-void cwg_destroy(cwg_t *wg) {
+static inline void cwg_destroy(cwg_t *wg) {
     if (!wg) return;
     
     _cwg_cond_destroy(&wg->cnd);
@@ -254,7 +268,7 @@ void cwg_destroy(cwg_t *wg) {
 }
 
 // Increment the counter by 'delta'. Call before starting work.
-bool cwg_add(cwg_t *wg, int delta) {
+static inline bool cwg_add(cwg_t *wg, int delta) {
     if (!wg) return false;
     
     // Prevent adding while someone is waiting (matches Go's behavior)
@@ -287,9 +301,16 @@ bool cwg_add(cwg_t *wg, int delta) {
 
 // Decrement the counter by 1. Call when a task is finished.
 // Equivalent to cwg_add(wg, -1).
-void cwg_done(cwg_t *wg) {
+static inline void cwg_done(cwg_t *wg) {
     if (!wg) return;
     int old_count = atomic_fetch_sub_explicit(&wg->counter, 1, memory_order_acq_rel);
+
+    // Keep counter non-negative if cwg_done() is called too many times.
+    if (old_count <= 0) {
+        atomic_fetch_add(&wg->counter, 1);
+        return;
+    }
+
     if (old_count == 1) {
         _cwg_mutex_lock(&wg->mtx);
         _cwg_cond_broadcast(&wg->cnd);
@@ -298,7 +319,7 @@ void cwg_done(cwg_t *wg) {
 }
 
 // Block until the counter reaches zero.
-void cwg_wait(cwg_t *wg) {
+static inline void cwg_wait(cwg_t *wg) {
     if (!wg) return;
     _cwg_mutex_lock(&wg->mtx);
     atomic_store(&wg->waiting, true);
@@ -310,7 +331,7 @@ void cwg_wait(cwg_t *wg) {
 }
 
 // Starts a new concurrent task (like Golang's 'go' keyword).
-bool cwg_go(cwg_t *wg, int (*func)(void *), void *arg) {
+static inline bool cwg_go(cwg_t *wg, int (*func)(void *), void *arg) {
     if (!wg || !func) return false;
     cwg_job_t *job = (cwg_job_t *)malloc(sizeof(cwg_job_t));
     if (!job) return false;
@@ -347,7 +368,7 @@ bool cwg_go(cwg_t *wg, int (*func)(void *), void *arg) {
     CloseHandle(thread_handle); // Detach by closing handle
 #elif defined(CWG_USE_PTHREADS)
     pthread_t thread_id;
-    int res = pthread_create(&thread_id, NULL, (void *(*)(void *))_cwg_thread_entry, job);
+    int res = pthread_create(&thread_id, NULL, _cwg_thread_entry_pthread, job);
     
     if (res != 0) {
         cwg_done(wg);
@@ -363,7 +384,7 @@ bool cwg_go(cwg_t *wg, int (*func)(void *), void *arg) {
 
 // Get current counter value (for debugging/testing)
 // The value may change immediately after reading
-int cwg_count(cwg_t *wg) {
+static inline int cwg_count(cwg_t *wg) {
     if (!wg) return -1;
     return atomic_load_explicit(&wg->counter, memory_order_acquire);
 }

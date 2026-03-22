@@ -1,3 +1,5 @@
+[![Support Me](https://img.shields.io/badge/Support-Me-darkgreen?labelColor=black&logo=data:image/svg%2Bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI%2BPHBhdGggZmlsbD0iI0ZGRiIgZmlsbC1ydWxlPSJldmVub2RkIiBjbGlwLXJ1bGU9ImV2ZW5vZGQiIGQ9Ik0xMiAxQzUuOTI1IDEgMSA1LjkyNSAxIDEyczQuOTI1IDExIDExIDExIDExLTQuOTI1IDExLTExUzE4LjA3NSAxIDEyIDF6bTAgNGwyLjUgNi41SDIxbC01LjUgNCAyIDYuNUwxMiAxNy41IDYgMjJsMi02LjUtNS41LTRoNi41TDEyIDV6Ii8%2BPC9zdmc%2B)](https://sibexi.co/support)
+
 **C WaitGroup (cwg)**
 
 A Golang-style WaitGroup implementation in C with cross-platform support for Linux and Windows. 
@@ -19,8 +21,20 @@ To use, just include cwg.h in your C source file.
 example.c
 ```C
 #include <stdio.h>
-#include <time.h>
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 #include "cwg.h" // Include the header
+
+static void sleep_ms(int ms) {
+#if defined(_WIN32)
+    Sleep((DWORD)ms);
+#else
+    usleep((useconds_t)(ms * 1000));
+#endif
+}
 
 // The function that runs in a new thread
 int worker(void *arg) {
@@ -28,7 +42,7 @@ int worker(void *arg) {
     printf("Worker %d: Starting...\n", worker_id);
 
     // Simulate work
-    thrd_sleep(&(struct timespec){.tv_sec = 2}, NULL); 
+    sleep_ms(500);
 
     printf("Worker %d: Finished.\n", worker_id);
     return 0;
@@ -48,9 +62,14 @@ int main() {
     int id1 = 1, id2 = 2, id3 = 3;
 
     // Launch tasks using cwg_go
-    cwg_go(&wg, worker, &id1);
-    cwg_go(&wg, worker, &id2);
-    cwg_go(&wg, worker, &id3);
+    if (!cwg_go(&wg, worker, &id1) ||
+        !cwg_go(&wg, worker, &id2) ||
+        !cwg_go(&wg, worker, &id3)) {
+        fprintf(stderr, "Failed to launch worker.\n");
+        cwg_wait(&wg);
+        cwg_destroy(&wg);
+        return 1;
+    }
 
     printf("Waiting for all workers to finish...\n");
     
